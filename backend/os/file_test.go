@@ -194,13 +194,17 @@ func (s *osFileTest) TestSeekThenWrite() {
 		s.Run(tt.name, func() {
 			// Use a fixture-local file per subtest rather than the suite-wide test_files/test.txt,
 			// so a failed assertion mid-subtest can't leave shared state mutated for later subtests
-			// or other suite tests.
-			fixturePath := path.Join(s.tmploc.Path(), "test_files", tt.fixture)
-			s.Require().NoError(os.WriteFile(fixturePath, []byte("hello world"), 0o600))
-			defer func() { _ = os.Remove(fixturePath) }()
-
-			f, err := s.fileSystem.NewFile("", fixturePath)
+			// or other suite tests. Built and populated entirely through vfs.File (not raw os.*
+			// calls) so path handling stays correct on Windows: s.tmploc.Path() returns vfs-style
+			// paths (e.g. "/C:/Temp/...") that only vfs's own os-path translation, not the stdlib
+			// os package directly, knows how to convert to a native path.
+			f, err := s.tmploc.NewFile(path.Join("test_files", tt.fixture))
 			s.Require().NoError(err)
+			defer func() { _ = f.Delete() }()
+
+			_, err = f.Write([]byte("hello world"))
+			s.Require().NoError(err)
+			s.Require().NoError(f.Close())
 
 			_, err = f.Seek(tt.offset, io.SeekStart)
 			s.Require().NoError(err)
@@ -208,11 +212,9 @@ func (s *osFileTest) TestSeekThenWrite() {
 			s.Require().NoError(err)
 			s.Require().NoError(f.Close())
 
-			r, err := s.fileSystem.NewFile("", fixturePath)
+			got, err := io.ReadAll(f)
 			s.Require().NoError(err)
-			got, err := io.ReadAll(r)
-			s.Require().NoError(err)
-			s.Require().NoError(r.Close())
+			s.Require().NoError(f.Close())
 			s.Equal(tt.expected, string(got))
 		})
 	}
