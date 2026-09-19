@@ -362,6 +362,72 @@ func (ts *fileTestSuite) TestSeek() {
 	ts.Require().ErrorIs(err, os.ErrNotExist, "os error not exist expected")
 }
 
+// TestSeekToStartThenWritePreservesExistingContent is a regression test for the ftp analog of
+// https://github.com/C2FO/vfs/issues/365: Seek(0, io.SeekStart) followed by Write must preserve
+// the untouched remainder of an existing file, not just replace it with the newly written bytes.
+// FTP's STOR+REST streams new bytes directly to the server and can't be relied on to preserve a
+// remote tail beyond what's written (observed against a live vsftpd server via the testcontainers
+// module), so Write now buffers to a local temp file seeded with the full existing content in this
+// case, and uploads the merged result in full on Close.
+func (ts *fileTestSuite) TestSeekToStartThenWritePreservesExistingContent() {
+	existing := "hello world"
+
+	mockDataConn := mocks.NewDataConn(ts.T())
+	mockDataConn.EXPECT().Mode().Return(types.OpenRead)
+	mockDataConn.EXPECT().IsTimePreciseInList().Return(true)
+	dataConnGetterFunc = func(_ context.Context, _ authority.Authority, fs *FileSystem, _ *File, _ types.OpenType) (types.DataConn, error) {
+		fs.dataconn = mockDataConn
+		return mockDataConn, nil
+	}
+
+	client := mocks.NewClient(ts.T())
+	fp := "/some/path.txt"
+	auth, err := authority.NewAuthority("user@host1.com:22")
+	ts.Require().NoError(err)
+
+	ftpfile := &File{
+		location: &Location{
+			fileSystem: &FileSystem{ftpclient: client, options: Options{}},
+			authority:  auth,
+		},
+		path: fp,
+	}
+
+	// Seek(0, io.SeekStart) on an existing file: checks existence, then eagerly opens a read
+	// dataconn (unchanged pre-existing behavior).
+	mockDataConn.EXPECT().GetEntry(fp).Return(&_ftp.Entry{}, nil).Once()
+	_, err = ftpfile.Seek(0, io.SeekStart)
+	ts.Require().NoError(err)
+
+	// Write: closes the dataconn left open by Seek, re-checks existence, downloads the full
+	// existing content via a fresh read dataconn (closed afterward), then buffers the write locally
+	// rather than streaming it straight to the server.
+	mockDataConn.EXPECT().Close().Return(nil).Twice()
+	mockDataConn.EXPECT().GetEntry(fp).Return(&_ftp.Entry{}, nil).Once()
+	mockDataConn.EXPECT().Read(mock.Anything).RunAndReturn(func(p []byte) (int, error) {
+		copy(p, existing)
+		return len(existing), io.EOF
+	}).Once()
+
+	n, err := ftpfile.Write([]byte("HELLO"))
+	ts.Require().NoError(err)
+	ts.Equal(5, n)
+
+	// Close: uploads the merged content (new bytes patched in at offset 0, over the downloaded
+	// original) in full, via a single plain STOR - not a partial write relying on server-side REST.
+	var uploaded string
+	client.EXPECT().StorFrom(fp, mock.Anything, uint64(0)).RunAndReturn(func(_ string, r io.Reader, _ uint64) error {
+		b, rerr := io.ReadAll(r)
+		ts.Require().NoError(rerr)
+		uploaded = string(b)
+		return nil
+	}).Once()
+
+	ts.Require().NoError(ftpfile.Close())
+	ts.Equal("HELLO world", uploaded,
+		"the untouched suffix must come from the downloaded existing content, not just the new write")
+}
+
 func (ts *fileTestSuite) TestSeekError() {
 	mockDataConn := mocks.NewDataConn(ts.T())
 	mockDataConn.EXPECT().Mode().Return(types.OpenRead)
