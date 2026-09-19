@@ -181,17 +181,25 @@ func (s *osFileTest) TestSeekThenWrite() {
 	// Seek repositions the write cursor, including back to the start.
 	tests := []struct {
 		name     string
+		fixture  string
 		offset   int64
 		write    string
 		expected string
 	}{
-		{"rewind to start", 0, "HELLO", "HELLO world"},
-		{"seek into middle", 6, "there", "hello there"},
+		{"rewind to start", "seek_then_write_rewind.txt", 0, "HELLO", "HELLO world"},
+		{"seek into middle", "seek_then_write_middle.txt", 6, "there", "hello there"},
 	}
 
 	for _, tt := range tests {
 		s.Run(tt.name, func() {
-			f, err := s.tmploc.NewFile("test_files/test.txt")
+			// Use a fixture-local file per subtest rather than the suite-wide test_files/test.txt,
+			// so a failed assertion mid-subtest can't leave shared state mutated for later subtests
+			// or other suite tests.
+			fixturePath := path.Join(s.tmploc.Path(), "test_files", tt.fixture)
+			s.Require().NoError(os.WriteFile(fixturePath, []byte("hello world"), 0o600))
+			defer func() { _ = os.Remove(fixturePath) }()
+
+			f, err := s.fileSystem.NewFile("", fixturePath)
 			s.Require().NoError(err)
 
 			_, err = f.Seek(tt.offset, io.SeekStart)
@@ -200,14 +208,12 @@ func (s *osFileTest) TestSeekThenWrite() {
 			s.Require().NoError(err)
 			s.Require().NoError(f.Close())
 
-			r, err := s.tmploc.NewFile("test_files/test.txt")
+			r, err := s.fileSystem.NewFile("", fixturePath)
 			s.Require().NoError(err)
 			got, err := io.ReadAll(r)
 			s.Require().NoError(err)
 			s.Require().NoError(r.Close())
 			s.Equal(tt.expected, string(got))
-
-			s.Require().NoError(os.WriteFile(path.Join(s.tmploc.Path(), "test_files/test.txt"), []byte("hello world"), 0o600))
 		})
 	}
 }
