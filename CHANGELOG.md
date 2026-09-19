@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 ### Fixed
 - `os`: `Seek(0, io.SeekStart)` followed by `Write` appended instead of overwriting from the start. The temp file used to buffer writes was left at EOF by the initial copy, and the reposition was skipped when the cursor was zero.
+- `testcontainers`: Pin the `minio` conformance/IO container image to `quay.io/minio/minio` instead of `minio/minio`. The `minio/minio` repository no longer exists on Docker Hub, so the `testcontainers conformance` CI job failed to provision the `s3` backend container (`pull access denied for minio/minio, repository does not exist`) on every run. `quay.io/minio/minio` publishes the identical pinned tag.
 
 ## [[v7.29.0](https://github.com/C2FO/vfs/releases/tag/v7.29.0)] - 2026-08-28
 ### Security
