@@ -312,6 +312,15 @@ func (f *File) CopyToLocation(location vfs.Location) (vfs.File, error) {
 
 // Delete removes the remote file.  Error is returned, if any.
 func (f *File) Delete(_ ...options.DeleteOption) error {
+	// Close first so any write-after-seek/read merge buffered in f.tempFile (see its doc comment)
+	// gets flushed and cleaned up rather than orphaned on disk. Without this, Delete would remove
+	// the remote file while leaving the local temp file behind, and a later Close call would still
+	// think it has pending content to upload - resurrecting the file that was just deleted here.
+	// This mirrors the s3/gs backends, which also call Close first in Delete for the same reason.
+	if err := f.Close(); err != nil {
+		return utils.WrapDeleteError(err)
+	}
+
 	dc, err := f.location.fileSystem.DataConn(context.TODO(), f.Location().Authority(), types.SingleOp, f)
 	if err != nil {
 		return utils.WrapDeleteError(err)
@@ -413,13 +422,7 @@ func (f *File) Seek(offset int64, whence int) (int64, error) {
 	// progress), reposition within that temp file directly rather than touching the remote
 	// dataconn - the merge has already taken over local ownership of the content for this session.
 	if f.tempFile != nil {
-		pos, err := f.tempFile.Seek(offset, whence)
-		if err != nil {
-			return 0, utils.WrapSeekError(err)
-		}
-		f.offset = pos
-		f.seekCalled = true
-		return pos, nil
+		return f.seekTempFile(offset, whence)
 	}
 
 	// ensure file exists before seeking
@@ -487,6 +490,19 @@ func (f *File) Seek(offset int64, whence int) (int64, error) {
 
 	// return new offset from beginning of file
 	return f.offset, nil
+}
+
+// seekTempFile repositions within a write-after-seek/read merge's local temp file (see tempFile's
+// doc comment) rather than touching the remote dataconn - the merge has already taken over local
+// ownership of the content for this session.
+func (f *File) seekTempFile(offset int64, whence int) (int64, error) {
+	pos, err := f.tempFile.Seek(offset, whence)
+	if err != nil {
+		return 0, utils.WrapSeekError(err)
+	}
+	f.offset = pos
+	f.seekCalled = true
+	return pos, nil
 }
 
 // Write calls the underlying ftp.File Write.
