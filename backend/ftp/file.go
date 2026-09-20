@@ -518,9 +518,12 @@ func (f *File) Write(data []byte) (res int, err error) {
 			return 0, utils.WrapWriteError(existsErr)
 		}
 		if exists {
-			// A preceding Seek/Read may have eagerly opened a remote dataconn (Seek always leaves
-			// one open) at some other offset/mode. Close it first so downloadExistingContent below
-			// opens a fresh one positioned at offset 0, rather than reusing a stale, misaligned one.
+			// A preceding Seek/Read may have eagerly opened a remote dataconn at some other
+			// offset/mode. The Exists check above already closes it as a side effect (getDataConn
+			// closes any dataconn whose mode doesn't match the SingleOp mode Exists needs), leaving
+			// behind the fresh SingleOp connection Exists just opened for itself. Close that one
+			// here too, defensively, so downloadExistingContent below always opens its own fresh
+			// read connection positioned at offset 0 rather than potentially reusing this one.
 			if f.location.fileSystem.dataconn != nil {
 				_ = f.location.fileSystem.dataconn.Close()
 				f.location.fileSystem.dataconn = nil
